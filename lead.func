@@ -1,0 +1,391 @@
+
+//-999 == same as lead_1st_score -1 ?
+
+function lead_init()
+{
+  echo "Hello"
+  sp_sc_func_alias print                                                 debug_print
+  sp_sc_func_exec  spf_sc_list_add_func _sp_sv_on_client_die             "spf_sv_lead_die"
+  sp_sc_func_exec  spf_sc_list_add_func _sp_sv_on_client_disconnect      "spf_sv_lead_remove"
+  sp_sc_func_exec  spf_sc_list_add_func _sp_sv_on_client_begin           "spf_sv_lead_client_begin"
+  sp_sc_func_exec  spf_sc_list_add_func _sp_sv_on_client_userinfo_change "spf_sv_lead_is_spec_delay"
+  sp_sc_func_exec  spf_sc_list_add_func _sp_sv_on_map_begin              "spf_sv_lead_map_begin"
+  sp_sc_func_exec  spf_sc_list_add_func _sp_sv_on_client_spawn           "spf_sv_lead_spawn_sk_check" //we can detect 'kill' in console at spawn 
+}
+
+function spf_sv_lead_is_spec_delay(*)
+{
+  set ~slot #~1
+  //if password set - spectator == 1 then back to 0 when passowrd is wrong
+  sp_sc_cvar_sset ~cmd "sp_sc_func_exec spf_sv_lead_is_spec " #~1
+  sp_sc_timer 500 #~cmd
+}
+
+//on client begin = better
+function spf_sv_lead_map_begin()
+{
+  set lead_1st_score -999
+}
+
+function spf_sv_lead_client_begin(~slot)
+{
+  set lead_slot_score_$~slot 0
+  set lead_spawn_sk_check_$~slot 0
+  set lead_begin_$~slot 1
+  sp_sc_func_exec spf_sv_lead_find_highest
+  sp_sc_func_exec spf_sv_lead_is_spec #~slot
+  //if we're spec just -999 our score nothing else
+  sp_sv_info_client $~slot
+  sp_sc_flow_if number cvar _sp_sv_info_client_spectator == val 1
+  {
+    set lead_slot_score_$~slot -999
+  }
+  else
+  {
+    sp_sc_func_exec spf_sv_lead_pos $~slot
+  }
+
+}
+
+rcon sf_sv_player_pos acadie 0;rcon sf_sv_player_pos me 1;rcon add acadie_3 40;rcon sf_sv_effect_endpos acadie;rcon sf_sv_effect_start environ/fire_small me
+
+function spf_sv_lead_remove(*)
+{
+  //~1 = slot
+  set lead_begin_$~slot 0
+  set ~slot $~1
+  //this slot has a new score of -999
+  set lead_spawn_sk_check_$~slot 1
+  sp_sc_func_exec spf_sv_lead_neg $~slot 1
+}
+
+function spf_sv_lead_is_spec(*)
+{
+  set ~slot #~1
+  sp_sv_info_client $~slot
+  sp_sc_flow_if text cvar _sp_sv_info_client_ip != val ""
+  {
+
+    sp_sc_cvar_copy ~score lead_slot_score_$~slot
+    sp_sc_flow_if number cvar _sp_sv_info_client_spectator == val 1
+    {
+      set lead_spawn_sk_check_$~slot 1 //we died basically?
+      sp_sc_flow_if number cvar ~score != val -999
+      {
+        sp_sc_func_exec spf_sv_lead_remove $~slot
+      }
+    }
+    else
+    {
+      sp_sc_flow_if number cvar ~score == val -999
+      {
+        //new player or spectator returning
+        sp_sc_func_exec spf_sv_lead_pos $~slot
+      }     
+    }
+  }
+}
+
+function spf_sv_lead_die(*)
+{
+  set ~args #~0;set ~slot_victim #~1;set ~slot_killer #~2;set ~mod #~3;set ~flag #~4
+  set lead_spawn_sk_check_$~slot_victim 1
+  sp_sc_flow_if number cvar ~slot_killer == val -99
+  {
+    //a suicide
+    set ~slot_killer $~slot_victim
+  }
+
+  //IF we spawn and this isnt 1, we probably typed kill in console
+  
+  //Check if he gained or lost points after the kill (e.g. a teamkill or bad assassin kill)
+  sp_sv_info_client $~slot_killer; set ~newScore #_sp_sv_info_client_score
+  sp_sc_flow_if text cvar _sp_sv_info_client_ip != val ""
+  {
+    sp_sc_cvar_copy ~oldScore lead_slot_score_$~slot_killer
+    sp_sc_flow_if number cvar ~oldScore < cvar ~newScore
+    {
+      //+ score
+      sp_sc_func_exec spf_sv_lead_pos $~slot_killer
+    } 
+    else
+    {
+      //- score
+      sp_sc_func_exec spf_sv_lead_neg $~slot_killer 0
+    }
+  }
+}
+
+//if the oldScore >= to lead then we need to check
+function spf_sv_lead_pos(~slot)
+{
+  //if the new score is > than the lead_1st_score
+  //and the oldscore was ==
+  //if its == and 2 people have same score as 1st we both tied else, only us tied
+  //a player gained points
+  sp_sv_info_client $~slot
+  sp_sc_cvar_copy ~oldScore lead_slot_score_$~slot
+  set ~newScore #_sp_sv_info_client_score
+  set ~tmp_lead_1st_score #lead_1st_score
+  sp_sc_flow_if number cvar ~newScore == cvar ~oldScore
+  {
+    set ~oldScore -1
+    set ~newScore 0
+  }
+  set lead_slot_score_$~slot #~newScore
+  sp_sc_flow_if number cvar ~oldScore == cvar ~tmp_lead_1st_score
+  {
+    //all with oldscore lose the lead
+    sp_sc_func_exec spf_sv_lead_count_1st $~oldScore 1
+    //we have gained the lead if count ~tmp_lead_1st_score > 0
+    sp_sc_flow_if number cvar GLOBAL_lead_count_1st >= val 1
+    {
+      sp_sc_func_exec spf_sv_lead_slot_gained $~slot
+    }
+    //set new lead_1st_score
+    set lead_1st_score #~newScore
+  }
+  sp_sc_flow_if number cvar ~oldScore < cvar ~tmp_lead_1st_score
+  {
+    sp_sc_flow_if number cvar ~newScore > cvar ~tmp_lead_1st_score
+    {
+      //if count players with lead_1st_score > 0
+      sp_sc_func_exec spf_sv_lead_count_1st $~tmp_lead_1st_score 0
+      sp_sc_flow_if number cvar GLOBAL_lead_count_1st >= val 1
+      {
+        //we gained the lead
+        sp_sc_func_exec spf_sv_lead_slot_gained $~slot
+        //all with lead_1st_score lost the lead
+        sp_sc_func_exec spf_sv_lead_count_1st $~tmp_lead_1st_score 1
+      }
+      set lead_1st_score #~newScore
+    }
+    sp_sc_flow_if number cvar ~newScore == cvar ~tmp_lead_1st_score
+    {
+      //if count = 2 then all are tied
+      sp_sc_func_exec spf_sv_lead_count_1st $~tmp_lead_1st_score 0
+      sp_sc_flow_if number cvar GLOBAL_lead_count_1st == val 2
+      {
+        //both are tied
+        sp_sc_func_exec spf_sv_lead_count_1st $~tmp_lead_1st_score 2
+      }
+      sp_sc_flow_if number cvar GLOBAL_lead_count_1st > val 2
+      {
+        //we are newly tied for the lead
+        sp_sc_func_exec spf_sv_lead_slot_tied $~slot
+      }
+      sp_sc_flow_if number cvar GLOBAL_lead_count_1st == val 1
+      {
+        //we've joined an empty server
+        //nobody will connect you so you may aswell hear 'gained the lead'
+        sp_sc_func_exec spf_sv_lead_slot_gained $~slot
+      }   
+    }
+  }
+}
+
+
+//0
+//-2
+
+function spf_sv_lead_neg(~slot,~remove)
+{
+  //a player lost points
+  sp_sv_info_client $~slot
+  sp_sc_flow_if number cvar ~remove == val 1
+  {
+    set ~newScore -999
+  }
+  else
+  {
+    set ~newScore #_sp_sv_info_client_score
+  }
+  sp_sc_cvar_copy ~oldScore lead_slot_score_$~slot
+  set lead_slot_score_$~slot #~newScore
+  sp_sc_flow_if number cvar ~oldScore == cvar lead_1st_score
+  {
+    //We had the same score as 1st, and lost points
+    //Are we still the highest score?
+    sp_sc_func_exec spf_sv_lead_find_highest
+    //are we Still 1st?
+    sp_sc_flow_if number cvar ~newScore == cvar lead_1st_score
+    {
+      //we lost points. but our score is still the highest
+      //if more than 1(us) have same score then we are all tied
+      sp_sc_func_exec spf_sv_lead_count_1st $lead_1st_score 0
+      sp_sc_flow_if number cvar GLOBAL_lead_count_1st > val 1
+      {
+        //all in 1st are tied
+        sp_sc_func_exec spf_sv_lead_count_1st $lead_1st_score 2
+      }
+    }
+    else
+    {
+      //we lost the lead
+      sp_sc_func_exec spf_sv_lead_slot_lost $~slot
+      //if count of 1st == 1 - they gained the lead
+      sp_sc_func_exec spf_sv_lead_count_1st $lead_1st_score 0
+      sp_sc_flow_if number cvar GLOBAL_lead_count_1st == val 1
+      {
+        //they gained the lead
+        sp_sc_func_exec spf_sv_lead_slot_gained #GLOBAL_lead_count_lastmatch
+      }
+      else
+      {
+        //all in 1st are now tied
+        sp_sc_func_exec spf_sv_lead_count_1st $lead_1st_score 2
+      }
+    }
+  }
+}
+
+function spf_sv_lead_count_1st(~score,~lost)
+{
+  set ~counter 0
+  set ~count 0
+  sp_sc_flow_while number cvar ~counter < cvar maxclients
+  {
+    //set _sp_sv_info_client_* variables
+    sp_sv_info_client $~counter
+    //Make sure they are connected / not spectating
+    sp_sc_flow_if text cvar _sp_sv_info_client_ip != val ""
+    {
+      sp_sc_flow_if number cvar _sp_sv_info_client_spectator == val 0
+      {
+        //Do they have the same score as ~score (1st place)
+        sp_sc_flow_if number cvar _sp_sv_info_client_score == cvar ~score
+        {
+          set ~lastmatch #~counter
+          sp_sc_flow_if number cvar ~lost == val 1
+          {
+            sp_sc_func_exec spf_sv_lead_slot_lost $~counter
+          }
+          sp_sc_flow_if number cvar ~lost == val 2
+          {
+            sp_sc_func_exec spf_sv_lead_slot_tied $~counter
+          }
+          add ~count 1
+        }
+      }
+    }
+    add ~counter 1
+  }
+  //Loop finished. ~count holds the number of players who have the same score as 1st place
+  //Return the value by setting a cvar
+  set GLOBAL_lead_count_1st #~count
+  set GLOBAL_lead_count_lastmatch #~lastmatch
+}
+
+function spf_sv_lead_find_highest()
+{
+  //find the lowest ? then the highest?
+  set ~counter 0
+  //just pick a real score
+  zero ~highest_score
+  sp_sc_flow_while number cvar ~counter < cvar maxclients
+  {
+    sp_sv_info_client $~counter
+    sp_sc_flow_if text cvar _sp_sv_info_client_ip != val ""
+    {
+      sp_sc_flow_if number cvar _sp_sv_info_client_spectator == val 0
+      {
+        //and not speccing?
+        sp_sc_cvar_copy ~score lead_slot_score_$~counter
+        sp_sc_flow_if text cvar ~highest_score == val ""
+        {
+          set ~highest_score #~score 
+        }
+        else
+        {
+          sp_sc_flow_if number cvar ~score > cvar ~highest_score
+          {
+            set ~highest_score $~score
+          }
+        }
+      }
+    }
+    add ~counter 1
+  }
+  //we have the highest score 
+  sp_sc_flow_if text cvar ~highest_score == val ""
+  {
+    //last player in server disconnected
+    set ~highest_score 0
+  }
+  set lead_1st_score #~highest_score
+}
+
+function spf_sv_lead_spawn_sk_check(*)
+{
+  set ~slot $~1
+  sp_sv_info_client #~slot
+  sp_sc_flow_if number cvar _sp_sv_info_client_spectator == val 0
+  {
+    sp_sc_cvar_copy ~begin lead_begin_$~slot
+    sp_sc_flow_if number cvar ~begin == val 1
+    {
+      sp_sc_cvar_copy ~check lead_spawn_sk_check_$~slot
+      sp_sc_flow_if number cvar ~check == val 0
+      {
+        //we spawned without 'dieing'
+        //we are either newly connected or typed kill
+        //compare scores for both situations anyway
+        sp_sc_cvar_copy ~oldScore lead_slot_score_$~slot
+        sp_sv_info_client $~slot
+        sp_sc_flow_if text cvar _sp_sv_info_client_ip != val ""
+        {
+          set ~newScore #_sp_sv_info_client_score
+          sp_sc_flow_if number cvar ~newScore < cvar ~oldScore
+          {
+            //negative
+            sp_sc_func_exec spf_sv_lead_neg $~slot 0
+          } 
+        }
+        set lead_spawn_sk_check_$~slot 0 
+      }
+      else
+      {
+        set lead_spawn_sk_check_$~slot 0
+      }
+    }
+  }
+}
+
+function debug_print(*)
+{
+  set ~counter 1
+  sp_sc_flow_while number cvar ~counter <= cvar ~0
+  {
+    sp_sc_cvar_copy ~part ~$~counter
+    sp_sc_cvar_append ~msg " " #~part
+    add ~counter 1
+  }
+  sp_sc_cvar_append ~print #~msg
+  echo #~print
+}
+
+function spf_sv_lead_slot_lost(~slot)
+{
+  print $~slot "lost the lead"
+  sset ~msg $~slot "lost the lead"
+  say #~msg
+}
+function spf_sv_lead_slot_gained(~slot)
+{
+  print $~slot "gained the lead"
+  sset ~msg $~slot "gained the lead"
+  say #~msg
+}
+function spf_sv_lead_slot_tied(~slot)
+{
+  print $~slot "tied the lead"
+  sset ~msg $~slot "tied the lead"
+  say #~msg
+}
+
+
+function lead_debug()
+{
+  //a new player = on player_spawn then on player_begin
+} 
+
